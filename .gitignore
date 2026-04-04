@@ -1,0 +1,23 @@
+# API keys — NUNCA subir al repo
+.env
+.env.local
+.env.*
+
+# Transcripciones personales — no son parte del código
+transcripciones/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.log
+
+# Windows
+Thumbs.db
+desktop.ini
