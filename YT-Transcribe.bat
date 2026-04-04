@@ -23,7 +23,7 @@ echo.
 echo  Procesando...
 echo.
 
-cd /d "B:\Aplicaciones\yt-transcribe"
+cd /d "%~dp0"
 python yt_transcribe.py "%URL%"
 
 echo.
