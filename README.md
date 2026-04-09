@@ -1,8 +1,16 @@
 # YT-Transcribe
 
-YouTube o archivo local → Transcripción en Markdown. Un solo comando.
+YouTube o archivos locales → Transcripción en Markdown. Una URL, varios archivos, o una mezcla — todo en un solo comando.
 
-Busca subtítulos en YouTube primero (gratis, instantáneo). Si no hay, descarga el audio y transcribe con Groq Whisper (~300 min/día gratis). También acepta archivos de audio y video locales directamente.
+Busca subtítulos en YouTube primero (gratis, instantáneo). Si no hay, descarga el audio y transcribe con Groq Whisper (~300 min/día gratis). Acepta archivos de audio y video locales directamente. **Modo batch incluido:** pasa varias fuentes a la vez y las procesa todas en secuencia.
+
+```bash
+# Un archivo
+python yt_transcribe.py "https://youtube.com/watch?v=xxxxx"
+
+# Varios a la vez (batch)
+python yt_transcribe.py "URL1" "URL2" sesion.mp4 grabacion.mp3
+```
 
 ---
 
@@ -74,6 +82,11 @@ python yt_transcribe.py "C:\grabaciones\meeting.mp4"
 python yt_transcribe.py "audio.mp3"
 python yt_transcribe.py "C:\grabaciones\entrevista.m4a"
 
+# Modo batch — varias fuentes a la vez (URLs y/o archivos mezclados)
+python yt_transcribe.py "URL1" "URL2" "URL3"
+python yt_transcribe.py sesion1.mp4 sesion2.mp4 sesion3.mp3
+python yt_transcribe.py "https://youtube.com/watch?v=xxx" reunion.mp4 entrevista.mp3
+
 # Forzar Groq Whisper (saltar subtítulos YouTube)
 python yt_transcribe.py "URL" --force-audio
 
@@ -83,6 +96,20 @@ python yt_transcribe.py "URL" -o "/ruta/a/mis_transcripciones"
 # Buscar subtítulos en inglés
 python yt_transcribe.py "URL" --lang en
 ```
+
+---
+
+## Modo batch
+
+Pasa cualquier combinación de URLs de YouTube y archivos locales en un solo comando:
+
+```bash
+python yt_transcribe.py "URL1" "URL2" sesion.mp4 grabacion.mp3
+```
+
+- Se procesan en orden, uno a uno
+- Si una fuente falla, el error se muestra y continúa con la siguiente
+- Al final se imprime un resumen con todas las transcripciones completadas y los errores
 
 ---
 
@@ -103,7 +130,7 @@ python yt_transcribe.py "URL" --lang en
 | Tipo | Extensiones |
 |---|---|
 | Video | `.mp4` `.mkv` `.avi` `.mov` `.webm` `.wmv` `.ts` `.mts` |
-| Audio | `.mp3` `.m4a` `.wav` `.ogg` `.flac` `.opus` |
+| Audio | `.mp3` `.m4a` `.wav` `.ogg` `.flac` `.opus` `.weba` |
 
 ---
 
