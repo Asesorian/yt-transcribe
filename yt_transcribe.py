@@ -2,11 +2,13 @@
 """
 YT-Transcribe: YouTube o archivo local → Transcripción en Markdown
 Acepta URLs de YouTube o archivos de audio/video locales.
+Soporta múltiples fuentes en un solo comando (modo batch).
 
 Uso:
   python yt_transcribe.py "https://youtube.com/watch?v=xxxxx"
   python yt_transcribe.py "reunion.mp4"
   python yt_transcribe.py "C:\\grabaciones\\meeting.mp3"
+  python yt_transcribe.py URL1 URL2 archivo.mp4 archivo2.mp3  (modo batch)
   python yt_transcribe.py URL --force-audio    (saltar subtítulos, ir directo a Groq)
   python yt_transcribe.py URL -o carpeta       (guardar en otra carpeta)
   python yt_transcribe.py URL --lang en        (buscar subtítulos en inglés)
@@ -102,7 +104,7 @@ def get_video_info(url):
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
     if result.returncode != 0:
         print(f"  ❌ Error obteniendo info: {result.stderr[:200]}")
-        sys.exit(1)
+        return None
     info = json.loads(result.stdout)
     return {
         "title": info.get("title", "Sin título"),
@@ -273,11 +275,13 @@ def transcribe_with_groq(audio_path, api_key, max_retries=5):
             while elapsed < wait_seconds:
                 remaining = wait_seconds - elapsed
                 if remaining > interval:
-                    time.sleep(interval)
+                    import time as _time
+                    _time.sleep(interval)
                     elapsed += interval
                     print(f"  ⏳ {int(remaining - interval)}s restantes...")
                 else:
-                    time.sleep(remaining)
+                    import time as _time
+                    _time.sleep(remaining)
                     elapsed = wait_seconds
 
             print(f"  🔄 Reintentando (intento {attempt + 2}/{max_retries})...")
@@ -333,48 +337,15 @@ def save_transcript(text, info, output_dir, method):
     return filepath
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="YT-Transcribe: YouTube o archivo local → Transcripción en Markdown",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Ejemplos:
-  python yt_transcribe.py "https://youtube.com/watch?v=xxxxx"
-  python yt_transcribe.py "reunion.mp4"
-  python yt_transcribe.py "C:\\grabaciones\\meeting.mp3"
-  python yt_transcribe.py URL --force-audio
-  python yt_transcribe.py URL --lang en
-        """
-    )
-    parser.add_argument("source", help="URL de YouTube o ruta a archivo de audio/video")
-    parser.add_argument("-o", "--output", default=None,
-                        help="Carpeta de salida (default: ./transcripciones)")
-    parser.add_argument("--force-audio", action="store_true",
-                        help="Saltar subtítulos YouTube, ir directo a Groq Whisper")
-    parser.add_argument("--lang", default="es",
-                        help="Idioma preferido para subtítulos YouTube (default: es)")
-
-    args = parser.parse_args()
-
-    load_env()
-
-    output_dir = args.output or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "transcripciones"
-    )
-    os.makedirs(output_dir, exist_ok=True)
-
-    print(f"\n{'='*60}")
-    print(f"  YT-Transcribe")
-    print(f"{'='*60}")
-
-    local_mode = is_local_file(args.source)
+def process_source(source, args, output_dir):
+    """Procesar una sola fuente (URL o archivo local). Devuelve (filepath, método) o lanza excepción."""
+    local_mode = is_local_file(source)
 
     if local_mode:
         # ── MODO ARCHIVO LOCAL ───────────────────────────
-        filepath = Path(args.source)
+        filepath = Path(source)
         if not filepath.exists():
-            print(f"\n❌ Archivo no encontrado: {args.source}")
-            sys.exit(1)
+            raise FileNotFoundError(f"Archivo no encontrado: {source}")
 
         print(f"\n📂 Archivo local detectado: {filepath.name}")
         info = get_local_file_info(filepath)
@@ -388,25 +359,20 @@ Ejemplos:
 
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
-            print(f"\n❌ No se encontró GROQ_API_KEY en .env")
-            sys.exit(1)
+            raise EnvironmentError("No se encontró GROQ_API_KEY en .env")
 
         transcript = None
         method = "Groq Whisper (whisper-large-v3)"
 
         if filepath.suffix.lower() in VIDEO_EXTENSIONS:
-            # Video: extraer audio con ffmpeg y transcribir dentro del mismo tmpdir
             print(f"\n🎬 Extrayendo audio del video (requiere ffmpeg)...")
             with tempfile.TemporaryDirectory() as tmpdir:
                 audio_path = extract_audio_from_video(filepath, tmpdir)
                 if not audio_path:
-                    print("  ❌ Error extrayendo audio. ¿Está ffmpeg instalado?")
-                    print("     Instalar con: winget install ffmpeg")
-                    sys.exit(1)
+                    raise RuntimeError("Error extrayendo audio. ¿Está ffmpeg instalado? (winget install ffmpeg)")
                 audio_size = os.path.getsize(audio_path) / (1024 * 1024)
                 print(f"  ✅ Audio extraído ({audio_size:.1f} MB)")
 
-                # CORRECCIÓN: sin segundo argumento — max_size_mb usa valor por defecto (24)
                 chunks = split_audio_if_needed(audio_path)
                 n = len(chunks)
                 print(f"\n🤖 Transcribiendo con Groq Whisper ({n} {'parte' if n == 1 else 'partes'})...")
@@ -420,7 +386,6 @@ Ejemplos:
                         print(f"  ✅ Parte {i+1}/{n} completada ({len(text):,} chars)")
                 transcript = "\n\n".join(parts)
         else:
-            # Audio directo
             print(f"\n🤖 Transcribiendo con Groq Whisper...")
             if file_size_mb > 24:
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -445,7 +410,9 @@ Ejemplos:
     else:
         # ── MODO YOUTUBE ─────────────────────────────────
         print(f"\n📹 Obteniendo info del video...")
-        info = get_video_info(args.source)
+        info = get_video_info(source)
+        if not info:
+            raise RuntimeError(f"No se pudo obtener info del video: {source}")
         dur = int(info["duration"])
         print(f"   Título:   {info['title']}")
         print(f"   Canal:    {info['uploader']}")
@@ -456,7 +423,7 @@ Ejemplos:
 
         if not args.force_audio:
             print(f"\n📝 Buscando subtítulos en YouTube ({args.lang})...")
-            transcript = try_youtube_subtitles(args.source, args.lang)
+            transcript = try_youtube_subtitles(source, args.lang)
             if transcript:
                 method = f"Subtítulos YouTube ({args.lang})"
                 print(f"  ✅ Subtítulos encontrados ({len(transcript):,} caracteres)")
@@ -466,16 +433,13 @@ Ejemplos:
         if not transcript:
             api_key = os.environ.get("GROQ_API_KEY")
             if not api_key:
-                print(f"\n❌ No se encontró GROQ_API_KEY")
-                print(f"   Crea un archivo .env con: GROQ_API_KEY=tu_clave_de_groq")
-                sys.exit(1)
+                raise EnvironmentError("No se encontró GROQ_API_KEY en .env")
 
             print(f"\n🎵 Descargando audio...")
             with tempfile.TemporaryDirectory() as tmpdir:
-                audio_path = download_audio(args.source, tmpdir)
+                audio_path = download_audio(source, tmpdir)
                 if not audio_path:
-                    print("  ❌ Error descargando audio")
-                    sys.exit(1)
+                    raise RuntimeError("Error descargando audio")
 
                 file_size = os.path.getsize(audio_path) / (1024 * 1024)
                 print(f"  ✅ Audio descargado ({file_size:.1f} MB)")
@@ -497,14 +461,86 @@ Ejemplos:
                 method = "Groq Whisper (whisper-large-v3)"
                 print(f"  ✅ Transcripción completa ({len(transcript):,} caracteres)")
 
-    # ── Guardar ──────────────────────────────────────────
     filepath_out = save_transcript(transcript, info, output_dir, method)
+    return filepath_out, method, len(transcript)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="YT-Transcribe: YouTube o archivo local → Transcripción en Markdown",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Ejemplos:
+  python yt_transcribe.py "https://youtube.com/watch?v=xxxxx"
+  python yt_transcribe.py "reunion.mp4"
+  python yt_transcribe.py "C:\\grabaciones\\meeting.mp3"
+  python yt_transcribe.py URL1 URL2 archivo.mp4           (modo batch)
+  python yt_transcribe.py URL --force-audio
+  python yt_transcribe.py URL --lang en
+        """
+    )
+    parser.add_argument("sources", nargs="+",
+                        help="URLs de YouTube y/o rutas a archivos de audio/video (uno o varios)")
+    parser.add_argument("-o", "--output", default=None,
+                        help="Carpeta de salida (default: ./transcripciones)")
+    parser.add_argument("--force-audio", action="store_true",
+                        help="Saltar subtítulos YouTube, ir directo a Groq Whisper")
+    parser.add_argument("--lang", default="es",
+                        help="Idioma preferido para subtítulos YouTube (default: es)")
+
+    args = parser.parse_args()
+
+    load_env()
+
+    output_dir = args.output or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "transcripciones"
+    )
+    os.makedirs(output_dir, exist_ok=True)
+
+    total = len(args.sources)
+    results = []  # (source, filepath_out, chars) para los OK
+    errors  = []  # (source, mensaje) para los fallidos
 
     print(f"\n{'='*60}")
-    print(f"  💾 Guardado en: {filepath_out}")
-    print(f"  📊 Método: {method}")
-    print(f"  📝 Caracteres: {len(transcript):,}")
-    print(f"{'='*60}\n")
+    print(f"  YT-Transcribe{f'  —  {total} fuentes' if total > 1 else ''}")
+    print(f"{'='*60}")
+
+    for idx, source in enumerate(args.sources):
+        if total > 1:
+            print(f"\n{'─'*60}")
+            print(f"  [{idx+1}/{total}] {source}")
+            print(f"{'─'*60}")
+        try:
+            filepath_out, method, chars = process_source(source, args, output_dir)
+            results.append((source, filepath_out, method, chars))
+            print(f"\n  💾 Guardado en: {filepath_out}")
+            print(f"  📊 Método: {method}  |  📝 Caracteres: {chars:,}")
+        except Exception as e:
+            errors.append((source, str(e)))
+            print(f"\n  ❌ Error: {e}")
+            if total == 1:
+                sys.exit(1)
+            else:
+                print(f"  ⏭️  Continuando con la siguiente fuente...")
+
+    # ── Resumen final (solo en modo batch) ───────────────
+    if total > 1:
+        print(f"\n{'='*60}")
+        print(f"  RESUMEN BATCH — {total} fuentes procesadas")
+        print(f"{'='*60}")
+        print(f"  ✅ Completadas: {len(results)}/{total}")
+        for source, filepath_out, method, chars in results:
+            name = Path(source).name if is_local_file(source) else source[:60]
+            print(f"     • {name}")
+            print(f"       → {Path(filepath_out).name}  ({chars:,} chars, {method})")
+        if errors:
+            print(f"\n  ❌ Con errores: {len(errors)}/{total}")
+            for source, msg in errors:
+                name = Path(source).name if is_local_file(source) else source[:60]
+                print(f"     • {name}: {msg}")
+        print(f"{'='*60}\n")
+    else:
+        print(f"\n{'='*60}\n")
 
 
 if __name__ == "__main__":
