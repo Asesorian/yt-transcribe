@@ -35,12 +35,13 @@ cd yt-transcribe
 install.bat
 ```
 
-El instalador hace tres cosas:
+El instalador (`install.bat`) hace cuatro cosas:
+- **Verifica que Deno esté instalado** (si falta, aborta con instrucción clara)
 - Instala `yt-dlp` y `groq` vía pip
 - Detecta si tienes ffmpeg (necesario para videos >25 min y para archivos de video locales)
 - Te pide tu API key de Groq y la guarda en `.env`
 
-> ⚠️ **Importante:** `install.bat` no instala Deno. Debes instalarlo antes manualmente con el comando de arriba, o yt-dlp fallará al obtener info de cualquier vídeo de YouTube con el error *"No supported JavaScript runtime could be found"*. Después de instalar Deno, **cierra y vuelve a abrir la terminal** para que coja el PATH actualizado.
+> ⚠️ **Importante:** `install.bat` verifica Deno pero no lo instala. Si te falta, ejecuta primero `winget install DenoLand.Deno`, **cierra y vuelve a abrir la terminal** para que coja el PATH actualizado, y relanza `install.bat`.
 
 ---
 
@@ -132,9 +133,11 @@ python yt_transcribe.py "URL1" "URL2" sesion.mp4 grabacion.mp3
 2. **Para YouTube:** busca subtítulos primero (gratis), si no los hay descarga el audio
 3. **Para archivos de video** (mp4, mkv...): extrae el audio con ffmpeg y transcribe con Groq
 4. **Para archivos de audio** (mp3, m4a...): envía directamente a Groq Whisper
-5. **Si el audio supera 25 MB:** lo divide en partes automáticamente (requiere ffmpeg)
+5. **Si el audio supera 25 MB:** lo divide en partes automáticamente, **valida que cada parte esté bajo el límite real** y re-segmenta si hace falta
 6. **Si hay rate limit (429):** espera el tiempo exacto que indica Groq y reintenta solo
-7. **Guarda** la transcripción como `.md` en la carpeta `transcripciones/`
+7. **Tolerancia a fallos por chunk:** si una parte concreta falla, se marca `[PARTE X FALLÓ]` y continúa con las siguientes (no aborta todo)
+8. **Validación de completitud:** al final, comprueba caracteres / minuto y avisa si la densidad parece anormalmente baja
+9. **Guarda** la transcripción como `.md` en la carpeta `transcripciones/`
 
 ---
 
@@ -193,7 +196,7 @@ brew install deno
 curl -fsSL https://deno.land/install.sh | sh
 ```
 
-Después **cierra y vuelve a abrir la terminal** para que coja el PATH actualizado.
+Después **cierra y vuelve a abrir la terminal** para que coja el PATH actualizado. `install.bat` ahora verifica Deno automáticamente y te avisa si falta.
 
 ### Error: *"Private video"* / *"Sign in if you've been granted access"*
 
@@ -213,15 +216,36 @@ python -m pip install -U yt-dlp
 
 Es buena práctica hacerlo cada pocas semanas o antes de transcribir vídeos importantes.
 
-### Limitación conocida: subtítulos automáticos de YouTube en vídeos largos
+### Aviso: *"transcripción posiblemente incompleta"*
 
-La ruta de subtítulos YouTube (la que se usa por defecto, sin `--force-audio`) tiene un bug conocido con vídeos largos que usan subtítulos automáticos solapados: el deduplicado puede eliminar la mayor parte del contenido y devolver una transcripción muy incompleta sin avisar.
+Si al final de la ejecución ves un warning de densidad chars/minuto baja, la transcripción puede estar parcial (algún chunk falló silenciosamente o Groq devolvió respuesta truncada). Mira el output: cualquier marca `[PARTE X FALLÓ]` te indica exactamente qué chunk hay que reprocesar. Volver a lanzar el comando suele resolverlo (suelen ser rate limits o problemas puntuales de red).
 
-**Workaround fiable:** usa `--force-audio` para saltar los subtítulos de YouTube y transcribir directamente con Groq Whisper. Más lento, pero resultado completo garantizado.
+---
+
+## Changelog
+
+### v2 (12 abril 2026)
+
+**Resuelto:** Bug serio en vídeos largos.
+- `parse_vtt` perdía 80-95% del contenido en vídeos largos por dedup global de frases comunes. Ahora solo deduplica consecutivos idénticos (que es lo único que produce de verdad el sliding window de los auto-subs de YouTube).
+- `split_audio` validaba el chunking solo por estimación; ahora verifica el **tamaño real** de cada chunk post-split y re-segmenta si alguno excede el límite de Groq.
+- Si un chunk concreto falla durante la transcripción, ya no aborta todo: marca `[PARTE X FALLÓ]` y continúa.
+- Validación de completitud al final (chars/min) avisa si el resultado parece sospechosamente corto.
+- `download_audio` y `extract_audio_from_video` ahora muestran el progreso en tiempo real (yt-dlp y ffmpeg sin `capture_output`) — fundamental en vídeos de varias horas.
+- `install.bat` verifica Deno automáticamente con mensaje claro si falta.
+
+**Validado con:** vídeo de 173 min → 138.136 caracteres en 4 chunks, manejó 26 minutos de rate limits sin abortar.
+
+Si tenías una versión anterior y trabajabas con vídeos de más de ~30 minutos, **actualizar es muy recomendable**: la versión vieja podía devolver transcripciones parciales sin avisar.
 
 ```bash
-python yt_transcribe.py "URL" --force-audio
+cd yt-transcribe
+git pull
 ```
+
+### v1 (4 abril 2026)
+
+Primera versión pública: soporte URLs YouTube + archivos locales (mp4, mp3, m4a...), modo batch, retry automático en rate limit, instalador Windows.
 
 ---
 
