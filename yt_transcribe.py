@@ -331,8 +331,12 @@ def split_audio_with_overlap(audio_path, max_size_mb=MAX_CHUNK_MB,
             # El último chunk puede ser más corto que chunk_dur — no pasa nada
             # ffmpeg recorta automáticamente al llegar al final
             effective_duration = min(chunk_dur, total_duration - start + 1)
+            print(f"  \u2702\ufe0f  Extrayendo parte {idx+1} [desde {fmt_time(start)}]...",
+                  end="", flush=True)
             if not _extract_chunk(audio_path, start, effective_duration, chunk_path):
                 raise RuntimeError(f"No se pudo extraer chunk {idx} desde {start}s")
+            chunk_size = os.path.getsize(chunk_path) / (1024 * 1024)
+            print(f" ok ({chunk_size:.1f} MB)")
             chunks.append((chunk_path, start))
             start += step
             idx += 1
