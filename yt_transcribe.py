@@ -65,6 +65,20 @@ MIN_CHUNK_DURATION = 60      # Chunk mínimo (si audio es muy corto lo dejamos e
 PARAGRAPH_GAP_SECONDS = 45   # Cada ~45s de contenido → nuevo párrafo con timestamp
 DEDUP_TOLERANCE = 0.5        # Segundos de tolerancia al deduplicar overlap
 
+# Ruta del cookies.txt (misma carpeta que el script)
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
+
+
+def get_yt_args():
+    """Construir argumentos base para yt-dlp.
+    - Siempre incluye cookies.txt si existe (necesario desde cambios YouTube 2026)
+    - Sin forzar cliente concreto (yt-dlp elige el mejor disponible)
+    """
+    args = []
+    if os.path.exists(COOKIES_FILE):
+        args += ["--cookies", COOKIES_FILE]
+    return args
+
 
 def load_env():
     """Cargar GROQ_API_KEY desde .env si existe"""
@@ -131,11 +145,7 @@ def get_local_file_info(filepath):
 
 
 def extract_audio_from_video(video_path, output_dir):
-    """Extraer audio de un archivo de video con ffmpeg.
-
-    Muestra progreso en tiempo real (-stats + sin capture_output)
-    para que el usuario vea avance en archivos grandes.
-    """
+    """Extraer audio de un archivo de video con ffmpeg."""
     output_path = os.path.join(output_dir, "audio.mp3")
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-stats",
@@ -153,7 +163,7 @@ def extract_audio_from_video(video_path, output_dir):
 
 def get_video_info(url):
     """Obtener título, duración y metadata del video de YouTube"""
-    cmd = ["yt-dlp", "--dump-json", "--no-download", url]
+    cmd = ["yt-dlp", "--dump-json", "--no-download"] + get_yt_args() + [url]
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
     if result.returncode != 0:
         print(f"  ❌ Error obteniendo info: {result.stderr[:200]}")
@@ -180,6 +190,7 @@ def try_youtube_subtitles(url, lang="es"):
                 "--sub-lang", lang,
                 "--sub-format", "vtt",
                 "--skip-download",
+            ] + get_yt_args() + [
                 "-o", output,
                 url
             ]
@@ -198,12 +209,7 @@ def try_youtube_subtitles(url, lang="es"):
 
 
 def parse_vtt(vtt_path):
-    """Convertir archivo VTT en texto limpio.
-
-    Solo dedup consecutivos idénticos. El dedup global (seen = set()) eliminaba
-    80-95% del contenido en vídeos largos: frases comunes ('vale', 'entonces',
-    'exacto') aparecen cientos de veces y solo se conservaba la primera.
-    """
+    """Convertir archivo VTT en texto limpio."""
     lines = []
     last_clean = None
 
@@ -236,6 +242,7 @@ def download_audio(url, output_dir):
         "-x",
         "--audio-format", "mp3",
         "--audio-quality", "5",
+    ] + get_yt_args() + [
         "-o", output_template,
         url
     ]
@@ -251,11 +258,7 @@ def download_audio(url, output_dir):
 
 
 def _extract_chunk(audio_path, start, duration, output_path):
-    """Extraer un chunk concreto con ffmpeg (-ss start -t duration).
-
-    Devuelve True si el chunk se generó correctamente y tiene tamaño > 0.
-    Re-encoda a MP3 q5 para tamaño predecible.
-    """
+    """Extraer un chunk concreto con ffmpeg (-ss start -t duration)."""
     cmd = [
         "ffmpeg", "-y",
         "-ss", str(start),
@@ -276,43 +279,24 @@ def _extract_chunk(audio_path, start, duration, output_path):
 
 def split_audio_with_overlap(audio_path, max_size_mb=MAX_CHUNK_MB,
                              overlap_seconds=OVERLAP_SECONDS):
-    """Dividir audio en chunks solapados para Groq (v3).
-
-    Estrategia:
-      1. Si el audio cabe en 1 chunk (< max_size_mb), devolver como [(path, 0)]
-      2. Estimar chunk_duration ideal por ratio tamaño/duración × 0.8
-         (margen de seguridad igual que v2 para bitrate variable MP3 q5)
-      3. Loop extrayendo chunk por chunk con -ss start -t chunk_duration
-         start_{i+1} = start_i + (chunk_duration - overlap_seconds)
-      4. Validar tamaño real. Si algún chunk excede max_size_mb → re-split
-         con chunk_duration / 2 (hasta 3 reintentos)
-      5. Devolver lista de tuplas (chunk_path, start_time_in_original_seconds)
-
-    El offset es el ABSOLUTO dentro del audio original, necesario luego
-    para recomponer timestamps globales.
-    """
+    """Dividir audio en chunks solapados para Groq (v3)."""
     file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
     total_duration = get_audio_duration(audio_path)
 
-    # Caso simple: cabe en una llamada
     if file_size_mb <= max_size_mb:
         return [(audio_path, 0.0)]
 
     if total_duration <= 0:
-        total_duration = 3600  # Fallback defensivo
+        total_duration = 3600
 
     print(f"  📦 Audio grande ({file_size_mb:.1f} MB, {total_duration/60:.1f} min), "
           f"dividiendo con overlap de {overlap_seconds}s...")
 
     output_dir = os.path.dirname(audio_path)
-
-    # Duración estimada por chunk (mismo margen 0.8 que v2)
     chunk_duration = int((max_size_mb / file_size_mb) * total_duration * 0.8)
     chunk_duration = max(chunk_duration, MIN_CHUNK_DURATION)
 
     def build_chunks(chunk_dur):
-        """Construir todos los chunks con la duración dada. Devuelve lista [(path, offset)]."""
-        # Borrar chunks previos
         for f in Path(output_dir).glob("chunk_*.mp3"):
             try:
                 os.remove(f)
@@ -328,8 +312,6 @@ def split_audio_with_overlap(audio_path, max_size_mb=MAX_CHUNK_MB,
 
         while start < total_duration:
             chunk_path = os.path.join(output_dir, f"chunk_{idx:03d}.mp3")
-            # El último chunk puede ser más corto que chunk_dur — no pasa nada
-            # ffmpeg recorta automáticamente al llegar al final
             effective_duration = min(chunk_dur, total_duration - start + 1)
             print(f"  \u2702\ufe0f  Extrayendo parte {idx+1} [desde {fmt_time(start)}]...",
                   end="", flush=True)
@@ -345,7 +327,6 @@ def split_audio_with_overlap(audio_path, max_size_mb=MAX_CHUNK_MB,
 
     chunks = build_chunks(chunk_duration)
 
-    # Validar tamaños reales
     def check_oversized(chunk_list):
         oversized = []
         for path, _ in chunk_list:
@@ -358,10 +339,6 @@ def split_audio_with_overlap(audio_path, max_size_mb=MAX_CHUNK_MB,
     retry_count = 0
     while oversized and retry_count < 3:
         retry_count += 1
-        print(f"  ⚠️  {len(oversized)} chunks superan {max_size_mb} MB:")
-        for path, size in oversized:
-            print(f"     {Path(path).name}: {size:.1f} MB")
-
         chunk_duration = max(chunk_duration // 2, 30)
         print(f"  🔄 Re-segmentando con chunks de {chunk_duration}s (+{overlap_seconds}s overlap)...")
         chunks = build_chunks(chunk_duration)
@@ -382,13 +359,7 @@ def split_audio_with_overlap(audio_path, max_size_mb=MAX_CHUNK_MB,
 
 
 def transcribe_with_groq(audio_path, api_key, max_retries=5):
-    """Transcribir audio con Groq Whisper API (verbose_json con timestamps).
-
-    Devuelve lista de segments: [{'start': float, 'end': float, 'text': str}, ...]
-    Los timestamps son LOCALES al audio recibido (0-based).
-
-    Conserva retry logic de v2 para rate limits.
-    """
+    """Transcribir audio con Groq Whisper API (verbose_json con timestamps)."""
     import time
     from groq import Groq, RateLimitError
 
@@ -405,7 +376,6 @@ def transcribe_with_groq(audio_path, api_key, max_retries=5):
                     timestamp_granularities=["segment"],
                 )
 
-            # El SDK devuelve un objeto con atributo .segments o dict con 'segments'
             if hasattr(transcription, "segments"):
                 raw_segments = transcription.segments or []
             elif isinstance(transcription, dict):
@@ -461,14 +431,7 @@ def transcribe_with_groq(audio_path, api_key, max_retries=5):
 
 
 def format_transcript_with_timestamps(global_segments, gap_seconds=PARAGRAPH_GAP_SECONDS):
-    """Agrupar segments globales en párrafos con [HH:MM:SS] de cabecera.
-
-    Regla simple: cuando el acumulado de un párrafo supera gap_seconds,
-    abrir nuevo párrafo con el timestamp del primer segment del grupo.
-
-    Si además hay un silencio grande (>3s) entre segments consecutivos,
-    también abrimos párrafo. Eso respeta pausas naturales de habla.
-    """
+    """Agrupar segments globales en párrafos con [HH:MM:SS] de cabecera."""
     if not global_segments:
         return ""
 
@@ -482,7 +445,6 @@ def format_transcript_with_timestamps(global_segments, gap_seconds=PARAGRAPH_GAP
         gap_from_last = seg["start"] - last_end
         elapsed_in_paragraph = seg["end"] - current_accum_start
 
-        # Abrir nuevo párrafo si: acumulado > umbral, o silencio grande entre segments
         if current_text and (elapsed_in_paragraph > gap_seconds or gap_from_last > 3.0):
             paragraphs.append(
                 f"[{fmt_time(current_accum_start)}] " + " ".join(current_text).strip()
@@ -502,31 +464,13 @@ def format_transcript_with_timestamps(global_segments, gap_seconds=PARAGRAPH_GAP
 
 
 def transcribe_chunks(chunks_with_offset, api_key, total_duration_seconds=0):
-    """Transcribir chunks con offset y recomponer timestamps globales.
-
-    Input: lista de (chunk_path, offset_seconds) — offsets ABSOLUTOS en el
-    audio original.
-
-    Proceso:
-      1. Cada chunk devuelve segments con timestamps LOCALES
-      2. Sumamos offset → timestamps GLOBALES
-      3. Deduplicamos zona de overlap: skip segments cuyo global_start
-         caiga dentro de max_end_so_far - DEDUP_TOLERANCE
-      4. Formateamos con párrafos + [HH:MM:SS]
-
-    Tolerancia a fallos de v2 preservada: si un chunk falla, se marca
-    placeholder y continuamos con los siguientes.
-
-    Devuelve (transcript_string, stats_dict).
-    """
+    """Transcribir chunks con offset y recomponer timestamps globales."""
     n = len(chunks_with_offset)
     all_global_segments = []
     failures = []
     max_end_so_far = -1.0
     dedup_skipped = 0
-
-    # Para los placeholders de error: guardamos el offset para poner timestamp
-    error_markers = []  # [(offset, chunk_index, error_message)]
+    error_markers = []
 
     for i, (chunk_path, offset) in enumerate(chunks_with_offset):
         if n > 1:
@@ -536,18 +480,15 @@ def transcribe_chunks(chunks_with_offset, api_key, total_duration_seconds=0):
             if not segments:
                 raise RuntimeError("Groq devolvió 0 segments")
 
-            # Detectar truncamiento conocido (bug de Groq Whisper)
             full_text = " ".join(s["text"] for s in segments).lower().rstrip(". \n")
             if any(full_text.endswith(marker) for marker in TRUNCATION_MARKERS):
                 print(f"  ⚠️  Parte {i+1} parece truncada (termina en marcador Groq)")
 
-            # Convertir a timestamps globales + deduplicar
             kept_in_this_chunk = 0
             for seg in segments:
                 global_start = offset + seg["start"]
                 global_end = offset + seg["end"]
 
-                # Saltar si ya cubierto por chunk anterior (zona de overlap)
                 if global_start < max_end_so_far - DEDUP_TOLERANCE:
                     dedup_skipped += 1
                     continue
@@ -561,9 +502,6 @@ def transcribe_chunks(chunks_with_offset, api_key, total_duration_seconds=0):
                 if global_end > max_end_so_far:
                     max_end_so_far = global_end
 
-            chars_this_chunk = sum(len(s["text"]) for s in segments if
-                                   offset + s["start"] >= max_end_so_far - DEDUP_TOLERANCE
-                                   or True)  # Informativo nada más
             if n > 1:
                 chars_kept = sum(
                     len(s["text"]) for s in all_global_segments[-kept_in_this_chunk:]
@@ -577,18 +515,13 @@ def transcribe_chunks(chunks_with_offset, api_key, total_duration_seconds=0):
             print(f"  ❌ Parte {i+1}/{n} FALLÓ: {e}")
             print(f"     Continuando con las siguientes partes...")
 
-    # Ordenar segments por start global (por si acaso)
     all_global_segments.sort(key=lambda s: s["start"])
-
-    # Formatear con timestamps
     transcript = format_transcript_with_timestamps(all_global_segments)
 
-    # Insertar marcadores de chunks fallidos en el lugar apropiado
     if error_markers:
         lines = []
         inserted = set()
         for block in transcript.split("\n\n"):
-            # Extraer timestamp del bloque (formato "[HH:MM:SS] ...")
             m = re.match(r'\[(\d{2}):(\d{2})(?::(\d{2}))?\]', block)
             if m:
                 if m.group(3):
@@ -598,14 +531,12 @@ def transcribe_chunks(chunks_with_offset, api_key, total_duration_seconds=0):
             else:
                 block_seconds = 0
 
-            # Insertar error_markers cuyo offset < block_seconds y no insertados aún
             for offset, chunk_idx, err in error_markers:
                 if chunk_idx not in inserted and offset <= block_seconds:
                     lines.append(f"[{fmt_time(offset)}] [PARTE {chunk_idx}/{n} FALLÓ: {err}]")
                     inserted.add(chunk_idx)
             lines.append(block)
 
-        # Cualquier error que quede al final
         for offset, chunk_idx, err in error_markers:
             if chunk_idx not in inserted:
                 lines.append(f"[{fmt_time(offset)}] [PARTE {chunk_idx}/{n} FALLÓ: {err}]")
@@ -626,10 +557,8 @@ def transcribe_chunks(chunks_with_offset, api_key, total_duration_seconds=0):
     }
 
     if dedup_skipped > 0 and n > 1:
-        print(f"\n  🔀 Deduplicación overlap: {dedup_skipped} segments descartados "
-              f"(esperado en zonas de solapamiento)")
+        print(f"\n  🔀 Deduplicación overlap: {dedup_skipped} segments descartados")
 
-    # Validación de completitud: chars/min vs duración esperada
     if total_duration_seconds > 0:
         expected_min_chars = (total_duration_seconds / 60) * MIN_CHARS_PER_MINUTE
         if real_chars < expected_min_chars:
@@ -637,8 +566,7 @@ def transcribe_chunks(chunks_with_offset, api_key, total_duration_seconds=0):
             duration_min = total_duration_seconds / 60
             print(f"\n  ⚠️  ALERTA: transcripción posiblemente incompleta")
             print(f"     {real_chars:,} chars para {duration_min:.0f} min de audio")
-            print(f"     Mínimo esperado: {expected_min_chars:,.0f} chars "
-                  f"({MIN_CHARS_PER_MINUTE} chars/min)")
+            print(f"     Mínimo esperado: {expected_min_chars:,.0f} chars")
             print(f"     Densidad obtenida: {ratio_pct:.0f}% del mínimo")
             stats["completeness_warning"] = True
 
@@ -703,7 +631,6 @@ def process_source(source, args, output_dir):
     local_mode = is_local_file(source)
 
     if local_mode:
-        # ── MODO ARCHIVO LOCAL ───────────────────────────
         filepath = Path(source)
         if not filepath.exists():
             raise FileNotFoundError(f"Archivo no encontrado: {source}")
@@ -735,7 +662,6 @@ def process_source(source, args, output_dir):
                     raise RuntimeError("Error extrayendo audio. ¿Está ffmpeg instalado? (winget install ffmpeg)")
                 audio_size = os.path.getsize(audio_path) / (1024 * 1024)
                 print(f"  ✅ Audio extraído ({audio_size:.1f} MB)")
-
                 chunks = split_audio_with_overlap(audio_path)
                 n = len(chunks)
                 print(f"\n🤖 Transcribiendo con Groq Whisper ({n} {'parte' if n == 1 else 'partes'})...")
@@ -752,8 +678,6 @@ def process_source(source, args, output_dir):
                     print(f"  Dividido en {n} partes...")
                     transcript, stats = transcribe_chunks(chunks, api_key, total_duration_seconds=duration)
             else:
-                # Audio chico: una sola llamada. Aún así usamos el pipeline nuevo
-                # para tener timestamps y formato uniforme.
                 transcript, stats = transcribe_chunks(
                     [(str(filepath), 0.0)], api_key, total_duration_seconds=duration
                 )
@@ -762,8 +686,9 @@ def process_source(source, args, output_dir):
               f"{stats['total_segments']} segments)")
 
     else:
-        # ── MODO YOUTUBE ─────────────────────────────────
         print(f"\n📹 Obteniendo info del video...")
+        if os.path.exists(COOKIES_FILE):
+            print(f"  🍪 Usando cookies.txt para autenticación")
         info = get_video_info(source)
         if not info:
             raise RuntimeError(f"No se pudo obtener info del video: {source}")

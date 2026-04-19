@@ -3,6 +3,9 @@
 .env.local
 .env.*
 
+# Cookies de YouTube — contienen sesión activa, NUNCA subir
+cookies.txt
+
 # Transcripciones personales — no son parte del código
 transcripciones/
 

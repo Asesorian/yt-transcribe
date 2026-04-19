@@ -26,8 +26,8 @@ python yt_transcribe.py "URL1" "URL2" sesion.mp4 grabacion.mp3
 ## Instalación en Windows
 
 ```bash
-# 1. Runtime JavaScript (requerido por yt-dlp para extraer info de YouTube)
-winget install DenoLand.Deno
+# 1. Instalar yt-dlp desde GitHub (obligatorio — la versión pip no incluye el solver JS)
+winget install yt-dlp
 
 # 2. Clonar e instalar
 git clone https://github.com/Asesorian/yt-transcribe.git
@@ -36,30 +36,30 @@ install.bat
 ```
 
 El instalador (`install.bat`) hace cuatro cosas:
-- **Verifica que Deno esté instalado** (si falta, aborta con instrucción clara)
-- Instala `yt-dlp` y `groq` vía pip
+- Instala `groq` vía pip
 - Detecta si tienes ffmpeg (necesario para videos >25 min y para archivos de video locales)
 - Te pide tu API key de Groq y la guarda en `.env`
 
-> ⚠️ **Importante:** `install.bat` verifica Deno pero no lo instala. Si te falta, ejecuta primero `winget install DenoLand.Deno`, **cierra y vuelve a abrir la terminal** para que coja el PATH actualizado, y relanza `install.bat`.
+> ⚠️ **Importante:** instala yt-dlp con `winget install yt-dlp`, no con pip. La versión pip no incluye el solver de JS challenges de YouTube y fallará con muchos videos.
 
 ---
 
 ## Instalación en Mac / Linux
 
 ```bash
-# 1. Runtime JavaScript (requerido por yt-dlp)
+# 1. yt-dlp desde GitHub (no usar pip)
 # Mac:
-brew install deno
+brew install yt-dlp
 # Linux:
-curl -fsSL https://deno.land/install.sh | sh
+sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+sudo chmod a+rx /usr/local/bin/yt-dlp
 
 # 2. Clonar e instalar
 git clone https://github.com/Asesorian/yt-transcribe.git
 cd yt-transcribe
-pip install yt-dlp groq
+pip install groq
 
-# ffmpeg (necesario para videos locales y audios >25 min)
+# ffmpeg (necesario para archivos de video locales y audios >25 min)
 # Mac:
 brew install ffmpeg
 # Ubuntu/Debian:
@@ -68,6 +68,28 @@ sudo apt install ffmpeg
 cp .env.example .env
 # Edita .env y pon tu clave: GROQ_API_KEY=tu_clave_aqui
 ```
+
+---
+
+## Autenticación con YouTube (requerida desde 2026)
+
+**Por qué ocurre esto:** A principios de 2026 YouTube lanzó una campaña activa contra las herramientas de descarga automatizada. Todos los videos — incluso los públicos — empezaron a devolver el error `Sign in to confirm you're not a bot`. No es un bug del script ni de yt-dlp: es una decisión deliberada de YouTube para forzar el uso de su plataforma directamente.
+
+Al mismo tiempo, YouTube eliminó el soporte OAuth2 en yt-dlp, y Chrome 127+ cambió el cifrado de sus cookies (App-Bound Encryption), lo que impide que yt-dlp las lea directamente con `--cookies-from-browser`. La única vía estable que queda es exportar las cookies manualmente como archivo `cookies.txt`.
+
+**Solución: exportar cookies desde el navegador**
+
+1. Instala la extensión **Get cookies.txt LOCALLY** en Chrome o Firefox:
+   - Chrome: [chromewebstore.google.com](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
+2. Abre [youtube.com](https://youtube.com) con tu sesión iniciada
+3. Haz clic en el icono de la extensión → **Export**
+4. Guarda el archivo como `cookies.txt` en la misma carpeta que `yt_transcribe.py`
+
+El script detecta `cookies.txt` automáticamente y lo usa en cada llamada a yt-dlp. No hace falta ninguna configuración adicional — verás `🍪 Usando cookies.txt` al procesar cualquier URL de YouTube.
+
+> ⚠️ **Las cookies caducan.** Si vuelves a ver el error de login, simplemente re-exporta el `cookies.txt` desde el navegador y reemplaza el anterior. El código no necesita ningún cambio.
+
+> ⚠️ **No subas `cookies.txt` a Git.** Está en `.gitignore` — contiene tu sesión de YouTube y no debe ser pública.
 
 ---
 
@@ -171,95 +193,83 @@ python yt_transcribe.py "URL1" "URL2" sesion.mp4 grabacion.mp3
 ## Requisitos
 
 - Python 3.10+
-- **Deno** (runtime JavaScript requerido por yt-dlp moderno para extraer info de YouTube)
-- yt-dlp (mantener actualizado — ver Troubleshooting)
+- **yt-dlp** instalado desde GitHub o winget (no pip — ver Instalación)
 - groq
 - ffmpeg (necesario para archivos de video locales y audios >25 min)
 - API key de Groq (gratuita)
+- `cookies.txt` de YouTube (ver sección Autenticación)
 
 ---
 
 ## Troubleshooting
 
-### Error: *"No supported JavaScript runtime could be found"*
+### Error: *"Please sign in"* / *"Sign in to confirm you're not a bot"*
 
-yt-dlp moderno requiere un runtime de JavaScript para extraer información de vídeos de YouTube (YouTube ofusca las URLs con JS). Por defecto busca Deno.
+YouTube requiere autenticación desde 2026 para todos los videos. Ver sección **Autenticación** arriba para la solución completa con contexto.
 
-**Solución:**
-```bash
-# Windows
-winget install DenoLand.Deno
-
-# Mac
-brew install deno
-
-# Linux
-curl -fsSL https://deno.land/install.sh | sh
-```
-
-Después **cierra y vuelve a abrir la terminal** para que coja el PATH actualizado. `install.bat` ahora verifica Deno automáticamente y te avisa si falta.
+Si ya tienes `cookies.txt` y vuelve a aparecer el error, las cookies han caducado. Re-expórtalas desde el navegador y reemplaza el archivo.
 
 ### Error: *"Private video"* / *"Sign in if you've been granted access"*
 
-El vídeo es privado o no listado. Esto ocurre con frecuencia en streams en directo que el organizador oculta tras terminar la retransmisión. Opciones:
-
-- Esperar a que se republique como vídeo normal (suele pasar en eventos con charlas editadas posteriormente)
-- Buscar una versión alternativa en otro canal
-- Actualmente el script no soporta `--cookies-from-browser` de yt-dlp, pero se puede añadir modificando `yt_transcribe.py`
+El vídeo es privado o no listado. Las cookies.txt solo funcionan para videos accesibles con tu cuenta. Si el video no es visible desde tu navegador con esa cuenta, tampoco será descargable.
 
 ### yt-dlp falla de forma rara con vídeos de YouTube
 
-YouTube cambia su ofuscador cada pocas semanas y las versiones viejas de yt-dlp dejan de funcionar sin previo aviso. Si notas errores extraños con vídeos que antes funcionaban, **actualiza yt-dlp primero**:
+YouTube cambia su sistema de protección frecuentemente. Si notas errores extraños:
 
+1. **Actualiza yt-dlp** (debe estar instalado desde GitHub/winget, no pip):
 ```bash
-python -m pip install -U yt-dlp
-```
+# Windows (winget)
+winget upgrade yt-dlp
 
-Es buena práctica hacerlo cada pocas semanas o antes de transcribir vídeos importantes.
+# Mac
+brew upgrade yt-dlp
+
+# Linux
+sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+```
+2. **Re-exporta cookies.txt** — las cookies antiguas pueden causar errores inesperados
 
 ### Aviso: *"transcripción posiblemente incompleta"*
 
-Si al final de la ejecución ves un warning de densidad chars/minuto baja, la transcripción puede estar parcial (algún chunk falló silenciosamente o Groq devolvió respuesta truncada). Mira el output: cualquier marca `[PARTE X FALLÓ]` te indica exactamente qué chunk hay que reprocesar. Volver a lanzar el comando suele resolverlo (suelen ser rate limits o problemas puntuales de red).
+Si al final de la ejecución ves un warning de densidad chars/minuto baja, la transcripción puede estar parcial. Mira el output: cualquier marca `[PARTE X FALLÓ]` te indica exactamente qué chunk hay que reprocesar. Volver a lanzar el comando suele resolverlo.
 
 ---
 
 ## Changelog
 
+### v3.1 (18 abril 2026)
+
+**Autenticación YouTube obligatoria.**
+
+YouTube lanzó en 2026 una campaña contra downloaders que afecta a todos los videos públicos. Cambios:
+- Soporte nativo para `cookies.txt`: si el archivo existe en la carpeta del script, se pasa automáticamente a yt-dlp en todas las llamadas
+- El script muestra `🍪 Usando cookies.txt` al procesar URLs de YouTube
+- Eliminada dependencia de Deno (ya no es necesario con yt-dlp instalado desde GitHub)
+- **Requisito actualizado:** yt-dlp debe instalarse desde GitHub o winget, no desde pip. La versión pip no incluye el solver de JS challenges
+
 ### v3 (16 abril 2026)
 
 **Timestamps y overlap para audios largos.**
-- Output Markdown ahora incluye `[HH:MM:SS]` por parrafo (~45s de contenido o silencio >3s). Los timestamps son globales respecto al audio original.
-- Chunking con **overlap de 5 segundos** entre partes consecutivas. Elimina la perdida de palabras en los bordes que ocurria con el corte en seco de v2.
-- Groq Whisper ahora usa `response_format="verbose_json"` con `timestamp_granularities=["segment"]`, que devuelve timestamps locales por segment en cada chunk.
-- Recomposicion de timestamps globales: offset acumulado por chunk + deduplicacion en zona de overlap (descarta segments cuyo inicio global cae dentro de lo ya transcrito).
-- Progreso de descarga yt-dlp ahora se muestra en una sola linea que se actualiza in-place (antes generaba cientos de lineas de spam en videos grandes).
-- Agrupacion en parrafos por umbral temporal, no por numero de lineas.
+- Output Markdown ahora incluye `[HH:MM:SS]` por parrafo (~45s de contenido o silencio >3s).
+- Chunking con **overlap de 5 segundos** entre partes consecutivas.
+- Groq Whisper usa `response_format="verbose_json"` con `timestamp_granularities=["segment"]`.
+- Recomposicion de timestamps globales + deduplicacion en zona de overlap.
 - Backup de v2 conservado como `yt_transcribe_v2_backup.py`.
 
-**Validado con:** video de 128 min (920 MB) -> 105.620 caracteres en 3 chunks, overlap dedup descarto 5 segments, rate limit retry automatico funciono correctamente.
+**Validado con:** video de 128 min (920 MB) → 105.620 caracteres en 3 chunks.
 
 ### v2 (12 abril 2026)
 
 **Resuelto:** Bug serio en vídeos largos.
-- `parse_vtt` perdía 80-95% del contenido en vídeos largos por dedup global de frases comunes. Ahora solo deduplica consecutivos idénticos (que es lo único que produce de verdad el sliding window de los auto-subs de YouTube).
-- `split_audio` validaba el chunking solo por estimación; ahora verifica el **tamaño real** de cada chunk post-split y re-segmenta si alguno excede el límite de Groq.
-- Si un chunk concreto falla durante la transcripción, ya no aborta todo: marca `[PARTE X FALLÓ]` y continúa.
-- Validación de completitud al final (chars/min) avisa si el resultado parece sospechosamente corto.
-- `download_audio` y `extract_audio_from_video` ahora muestran el progreso en tiempo real (yt-dlp y ffmpeg sin `capture_output`) — fundamental en vídeos de varias horas.
-- `install.bat` verifica Deno automáticamente con mensaje claro si falta.
-
-**Validado con:** vídeo de 173 min → 138.136 caracteres en 4 chunks, manejó 26 minutos de rate limits sin abortar.
-
-Si tenías una versión anterior y trabajabas con vídeos de más de ~30 minutos, **actualizar es muy recomendable**: la versión vieja podía devolver transcripciones parciales sin avisar.
-
-```bash
-cd yt-transcribe
-git pull
-```
+- `parse_vtt` perdía 80-95% del contenido por dedup global de frases comunes.
+- `split_audio` verifica tamaño real de cada chunk y re-segmenta si hace falta.
+- Tolerancia a fallos por chunk: marca `[PARTE X FALLÓ]` y continúa.
+- Validación de completitud al final (chars/min).
 
 ### v1 (4 abril 2026)
 
-Primera versión pública: soporte URLs YouTube + archivos locales (mp4, mp3, m4a...), modo batch, retry automático en rate limit, instalador Windows.
+Primera versión pública: soporte URLs YouTube + archivos locales, modo batch, retry automático en rate limit, instalador Windows.
 
 ---
 
@@ -274,6 +284,7 @@ yt-transcribe/
   YT-Transcribe.bat    Acceso directo (Windows)
   .env.example         Plantilla para tu API key
   .env                 Tu API key (no se sube a Git)
+  cookies.txt          Cookies de YouTube (no se sube a Git)
   transcripciones/     Aquí se guardan los .md (no se sube a Git)
   README.md            Este archivo
 ```
